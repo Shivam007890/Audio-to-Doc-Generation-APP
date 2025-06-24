@@ -1,28 +1,24 @@
 import os
 import re
 import streamlit as st
+import tempfile
+import json
 from docx import Document
 from docx.shared import Pt
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 import google.generativeai as genai
 import markdown2
 from bs4 import BeautifulSoup
-import tempfile
-import json
 
-# Streamlit page configuration
+# ========== STREAMLIT + SECRETS CONFIGURATION ==========
 st.set_page_config(page_title="Panchayat Audio Report Generator", layout="wide")
-
 st.title("Panchayat Audio Report Generator")
-st.write(
-    "Upload audio files to transcribe, translate to Malayalam, and generate professional Panchayat reports in DOCX format."
-)
+st.write("Upload audio files to transcribe, translate to Malayalam, and generate professional Panchayat reports in DOCX format.")
 
-# --- Google API Credentials Setup ---
-def set_credentials():
+def set_google_credentials_from_secrets():
     try:
         credentials_dict = dict(st.secrets["google"])
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode="w") as tmp_file:
             json.dump(credentials_dict, tmp_file)
             tmp_file_path = tmp_file.name
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tmp_file_path
@@ -33,9 +29,27 @@ def set_credentials():
         return False
 
 if "credentials_set" not in st.session_state:
-    st.session_state.credentials_set = set_credentials()
+    st.session_state.credentials_set = set_google_credentials_from_secrets()
 
-# --- Utility Functions ---
+def cleanup():
+    if "credentials_path" in st.session_state:
+        try:
+            os.unlink(st.session_state.credentials_path)
+        except Exception:
+            pass
+
+import atexit
+atexit.register(cleanup)
+
+# ========== USER CONFIGURATION (can be changed via UI) ==========
+st.header("Step 1: Configure Folders")
+AUDIO_FOLDER = st.text_input("Audio Folder Path", value=r"C:\Users\tiwar\OneDrive\Desktop\AUDIO_FOLDER")
+OUTPUT_FOLDER = st.text_input("Output Folder Path", value=r"C:\Users\tiwar\OneDrive\Desktop\GEMINI_OUTPUT")
+if st.button("Create Output Folder"):
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    st.success(f"Output folder created/verified at: {OUTPUT_FOLDER}")
+
+# ========== UTILITY FUNCTIONS ==========
 def get_mimetype(ext):
     ext = ext.lower()
     if ext == ".mp3":
@@ -59,7 +73,7 @@ def improved_gemini_prompt(mal_text):
 
 ## മോദി സർക്കാരിന്റെ നേട്ടങ്ങൾ
 - transcript-ൽ നിന്നുള്ള പ്രധാന നേട്ടങ്ങൾ, പദ്ധതികൾ, അവയുടെ ഫലപ്രാപ്തി, ഉദാഹരണങ്ങൾ
-- subheadings (ഉപശീർഷികങ്ങൾ) transcript-ൽ നിന്നുണ്ടെങ്കിൽ bold smaller headings ആയി ഉപയോഗിക്കുക; ഇവയില്ലെങ്കിൽ, സാധാരണയായി കാണുന്ന ഉപശീർഷികൾ ചേർക്കുക.
+- subheadings (ഉപശീർഷികങ്ങൾ) transcript-ൽ നിന്നുണ്ടെങ്കിൽ bold smaller headings ആയി ഉപയോഗിക്കുക; ഇവയില്ലെങ്കിൽ, സാധാരണയായി കാണുന്ന ഉപശീർഷികങ്ങൾ ചേർക്കുക.
 - body government report style-ൽ, വിശദീകരണം, context, statistics, examples എന്നിവയോടെ എഴുതുക.
 
 ## ആരോപണങ്ങൾ / അടിസ്ഥാന പ്രശ്നങ്ങൾ
@@ -73,7 +87,7 @@ def improved_gemini_prompt(mal_text):
 - body content professional, visionary, policy-oriented language-ൽ paragraph-ൽ വിശദമായി എഴുതുക.
 
 - Section headings bold, left aligned; subheadings bold, left aligned, smaller font; body justified alignment, bullet points/numbered lists ആവശ്യമായിടത്ത് മാത്രം ഉപയോഗിക്കുക.
-- Report-ൽ ഒരു ഭാഗത്തും [Insert ... here], "---", “audio does not provide”, “audio indicates”, “audio mentions”, “not mentioned”, “unavailable”, “lack. of data”, “audio-യിൽ” എന്നൊന്നും എഴുതരുത്.
+- Report-ൽ ഒരു ഭാഗത്തും [Insert ... here], "---", “audio does not provide”, “audio indicates”, “audio mentions”, “not mentioned”, “unavailable”, “lack of data”, “audio-യിൽ” എന്നൊന്നും എഴുതരുത്.
 
 Transcript:
 {mal_text}
@@ -106,6 +120,7 @@ def markdown_to_docx(md_text, out_path):
     for el in body.children:
         name = getattr(el, "name", None)
         if name and name.startswith("h"):
+            # Skip first H1 (handled as title)
             if name == "h1":
                 continue
             level = int(name[1])
@@ -140,12 +155,11 @@ def transcribe_and_translate(model, audio_bytes, mimetype, fname):
             "Transcribe this audio. Output only the transcript."
         ])
         transcript = transcript_response.text.strip()
+        st.write(f"**Transcript for {fname}:**\n{transcript}")
         if not transcript or transcript.strip().lower() in (
             "none", "no speech detected", "could not transcribe"):
             st.warning(f"No valid transcript extracted for {fname}.")
             return ""
-        st.write(f"**Transcript for {fname}:**\n{transcript}")
-
     with st.spinner(f"Translating {fname} to Malayalam..."):
         translation_response = model.generate_content([
             f"ഇത് മലയാളത്തിലേക്ക് വിവർത്തനം ചെയ്യുക:\n{transcript}"
@@ -159,38 +173,17 @@ def generate_professional_document(model, mal_text, fname):
         doc_prompt = improved_gemini_prompt(mal_text)
         doc_response = model.generate_content([doc_prompt])
         professional_doc_md = doc_response.text.strip()
-        if not professional_doc_md.strip():
-            st.warning(f"No markdown content generated for {fname}.")
-            return ""
         st.write(f"**Generated Markdown for {fname}:**\n{professional_doc_md}")
         return professional_doc_md
 
-def cleanup():
-    if "credentials_path" in st.session_state:
-        try:
-            os.unlink(st.session_state.credentials_path)
-        except Exception:
-            pass
-
-import atexit
-atexit.register(cleanup)
-
-# --- Main App Logic ---
+# ========== MAIN APP LOGIC ==========
 if st.session_state.credentials_set:
-    st.header("Step 1: Upload Audio Files")
-    st.write("Supported formats: WAV, MP3, OGG, FLAC, M4A, MP4")
+    st.header("Step 2: Upload Audio Files")
     audio_files = st.file_uploader(
-        "Upload audio files",
+        "Upload audio files (WAV, MP3, OGG, FLAC, M4A, MP4)",
         type=["wav", "mp3", "ogg", "flac", "m4a", "mp4"],
-        accept_multiple_files=True,
+        accept_multiple_files=True
     )
-
-    st.header("Step 2: Configure Output")
-    default_output = os.path.join(os.path.expanduser("~"), "Desktop", "GEMINI_OUTPUT")
-    output_folder = st.text_input("Output Folder Path", value=default_output)
-    if st.button("Create Output Folder"):
-        os.makedirs(output_folder, exist_ok=True)
-        st.success(f"Output folder created/verified at: {output_folder}")
 
     if audio_files and st.button("Process Audio Files"):
         model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
@@ -207,14 +200,12 @@ if st.session_state.credentials_set:
                 if not mal_text.strip():
                     st.error(f"Skipping {fname} as no transcript/translation was extracted.")
                     continue
-
                 professional_doc_md = generate_professional_document(model, mal_text, fname)
                 if not professional_doc_md.strip():
                     st.error(f"Skipping {fname} as no markdown document was generated.")
                     continue
-
                 out_base = os.path.splitext(fname)[0]
-                docx_path = os.path.join(output_folder, f"{out_base}_panchayat_document.docx")
+                docx_path = os.path.join(OUTPUT_FOLDER, f"{out_base}_panchayat_document.docx")
                 if markdown_to_docx(professional_doc_md, docx_path):
                     with open(docx_path, "rb") as f:
                         st.download_button(
