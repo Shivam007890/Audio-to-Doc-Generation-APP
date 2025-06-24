@@ -10,11 +10,14 @@ import google.generativeai as genai
 import markdown2
 from bs4 import BeautifulSoup
 
-# ========== STREAMLIT + SECRETS CONFIGURATION ==========
 st.set_page_config(page_title="Panchayat Audio Report Generator", layout="wide")
 st.title("Panchayat Audio Report Generator")
 st.write("Upload audio files to transcribe, translate to Malayalam, and generate professional Panchayat reports in DOCX format.")
 
+# 1. Configure Gemini API key from secrets (REQUIRED for Gemini API)
+genai.configure(api_key=st.secrets["gemini"]["api_key"])
+
+# 2. Set up Google Application Credentials for other Google APIs (OPTIONAL, only if you use them)
 def set_google_credentials_from_secrets():
     try:
         credentials_dict = dict(st.secrets["google"])
