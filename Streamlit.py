@@ -12,7 +12,9 @@ from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="Panchayat Audio Report Generator", layout="wide")
 st.title("Panchayat Audio Report Generator")
-st.markdown("Upload multiple audio files (WAV, MP3, OGG, FLAC, M4A, MP4) to transcribe, translate to Malayalam, and generate professional Panchayat reports in DOCX format. After processing, you will be able to download your reports directly.")
+st.markdown(
+    "Upload multiple audio files (WAV, MP3, OGG, FLAC, M4A, MP4) to transcribe, translate to Malayalam, and generate professional Panchayat reports in DOCX format. After processing, you will be able to download your reports directly."
+)
 
 # Configure Gemini API key from secrets (REQUIRED for Gemini API)
 if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
@@ -117,7 +119,6 @@ def markdown_to_docx(md_text):
     for el in body.children:
         name = getattr(el, "name", None)
         if name and name.startswith("h"):
-            # Skip first H1 (handled as title)
             if name == "h1":
                 continue
             level = int(name[1])
@@ -142,7 +143,7 @@ def markdown_to_docx(md_text):
                     table.cell(i, j).text = cell.text
         elif name is None and el.string and el.string.strip():
             doc.add_paragraph(el.string.strip())
-    # Save the docx to a temporary file and return the path and docx bytes
+    # Save the docx to a temporary file and return the bytes
     with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp_file:
         doc.save(tmp_file.name)
         tmp_file.seek(0)
@@ -151,28 +152,25 @@ def markdown_to_docx(md_text):
     return docx_bytes
 
 def transcribe_and_translate(model, audio_bytes, mimetype, fname):
-    with st.spinner(f"Transcribing {fname}..."):
-        transcript_response = model.generate_content([
-            {"mime_type": mimetype, "data": audio_bytes},
-            "Transcribe this audio. Output only the transcript."
-        ])
-        transcript = transcript_response.text.strip()
-        if not transcript or transcript.strip().lower() in (
-            "none", "no speech detected", "could not transcribe"):
-            return ""
-    with st.spinner(f"Translating {fname} to Malayalam..."):
-        translation_response = model.generate_content([
-            f"ഇത് മലയാളത്തിലേക്ക് വിവർത്തനം ചെയ്യുക:\n{transcript}"
-        ])
-        mal_text = translation_response.text.strip()
-        return mal_text
+    transcript_response = model.generate_content([
+        {"mime_type": mimetype, "data": audio_bytes},
+        "Transcribe this audio. Output only the transcript."
+    ])
+    transcript = transcript_response.text.strip()
+    if not transcript or transcript.strip().lower() in (
+        "none", "no speech detected", "could not transcribe"):
+        return ""
+    translation_response = model.generate_content([
+        f"ഇത് മലയാളത്തിലേക്ക് വിവർത്തനം ചെയ്യുക:\n{transcript}"
+    ])
+    mal_text = translation_response.text.strip()
+    return mal_text
 
 def generate_professional_document(model, mal_text, fname):
-    with st.spinner(f"Generating professional document for {fname}..."):
-        doc_prompt = improved_gemini_prompt(mal_text)
-        doc_response = model.generate_content([doc_prompt])
-        professional_doc_md = doc_response.text.strip()
-        return professional_doc_md
+    doc_prompt = improved_gemini_prompt(mal_text)
+    doc_response = model.generate_content([doc_prompt])
+    professional_doc_md = doc_response.text.strip()
+    return professional_doc_md
 
 if st.session_state.credentials_set:
     st.header("Step 1: Upload Audio Files")
@@ -182,6 +180,10 @@ if st.session_state.credentials_set:
         accept_multiple_files=True
     )
 
+    # Initialize session state for processed files
+    if "processed_files" not in st.session_state:
+        st.session_state.processed_files = dict()
+
     if audio_files:
         model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
 
@@ -189,28 +191,44 @@ if st.session_state.credentials_set:
             fname = audio_file.name
             ext = os.path.splitext(fname)[1]
             mimetype = get_mimetype(ext)
-            st.subheader(f"Processing: {fname}")
 
-            try:
-                audio_bytes = audio_file.read()
-                mal_text = transcribe_and_translate(model, audio_bytes, mimetype, fname)
-                if not mal_text.strip():
-                    st.error(f"Skipping {fname}: no transcript or translation extracted.")
-                    continue
-                professional_doc_md = generate_professional_document(model, mal_text, fname)
-                if not professional_doc_md.strip():
-                    st.error(f"Skipping {fname}: markdown document was not generated.")
-                    continue
-                docx_bytes = markdown_to_docx(professional_doc_md)
-                if docx_bytes:
-                    st.download_button(
-                        label=f"Download {fname} DOCX",
-                        data=docx_bytes,
-                        file_name=f"{os.path.splitext(fname)[0]}_panchayat_document.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    )
-                    st.success(f"DOCX ready for download: {fname}")
-                else:
-                    st.error(f"Failed to generate DOCX for {fname}.")
-            except Exception as e:
-                st.error(f"Error processing {fname}: {e}")
+            # Use session state to avoid re-processing
+            # Use key as (filename, file_size) to handle files with same name but different contents
+            file_key = (fname, audio_file.size)
+            if file_key not in st.session_state.processed_files:
+                with st.spinner(f"Processing: {fname}"):
+                    try:
+                        audio_bytes = audio_file.read()
+                        mal_text = transcribe_and_translate(model, audio_bytes, mimetype, fname)
+                        if not mal_text.strip():
+                            st.session_state.processed_files[file_key] = None
+                            st.error(f"Skipping {fname}: no transcript or translation extracted.")
+                            continue
+                        professional_doc_md = generate_professional_document(model, mal_text, fname)
+                        if not professional_doc_md.strip():
+                            st.session_state.processed_files[file_key] = None
+                            st.error(f"Skipping {fname}: markdown document was not generated.")
+                            continue
+                        docx_bytes = markdown_to_docx(professional_doc_md)
+                        if docx_bytes:
+                            st.session_state.processed_files[file_key] = docx_bytes
+                        else:
+                            st.session_state.processed_files[file_key] = None
+                            st.error(f"Failed to generate DOCX for {fname}.")
+                    except Exception as e:
+                        st.session_state.processed_files[file_key] = None
+                        st.error(f"Error processing {fname}: {e}")
+
+        # Now, offer download buttons for processed files (cached)
+        for audio_file in audio_files:
+            fname = audio_file.name
+            file_key = (fname, audio_file.size)
+            docx_bytes = st.session_state.processed_files.get(file_key)
+            if docx_bytes:
+                st.download_button(
+                    label=f"Download {fname} DOCX",
+                    data=docx_bytes,
+                    file_name=f"{os.path.splitext(fname)[0]}_panchayat_document.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+                st.success(f"DOCX ready for download: {fname}")
