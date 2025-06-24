@@ -1,0 +1,5 @@
+streamlit
+python-docx
+google-generativeai
+markdown2
+beautifulsoup4
