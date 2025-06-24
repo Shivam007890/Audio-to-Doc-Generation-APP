@@ -12,16 +12,16 @@ from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="Panchayat Audio Report Generator", layout="wide")
 st.title("Panchayat Audio Report Generator")
-st.write("Upload audio files to transcribe, translate to Malayalam, and generate professional Panchayat reports in DOCX format.")
+st.markdown("Upload multiple audio files (WAV, MP3, OGG, FLAC, M4A, MP4) to transcribe, translate to Malayalam, and generate professional Panchayat reports in DOCX format. After processing, you will be able to download your reports directly.")
 
-# 1. Configure Gemini API key from secrets (REQUIRED for Gemini API)
+# Configure Gemini API key from secrets (REQUIRED for Gemini API)
 if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
     genai.configure(api_key=st.secrets["gemini"]["api_key"])
 else:
     st.error("Gemini API key not found in secrets. Please add [gemini] api_key to your .streamlit/secrets.toml.")
     st.stop()
 
-# 2. Set up Google Application Credentials for other Google APIs (OPTIONAL, only if you use them)
+# Set up Google Application Credentials for other Google APIs (OPTIONAL, only if you use them)
 def set_google_credentials_from_secrets():
     try:
         credentials_dict = dict(st.secrets["google"])
@@ -47,13 +47,6 @@ def cleanup():
 
 import atexit
 atexit.register(cleanup)
-
-st.header("Step 1: Configure Folders")
-AUDIO_FOLDER = st.text_input("Audio Folder Path", value=r"C:\Users\tiwar\OneDrive\Desktop\AUDIO_FOLDER")
-OUTPUT_FOLDER = st.text_input("Output Folder Path", value=r"C:\Users\tiwar\OneDrive\Desktop\GEMINI_OUTPUT")
-if st.button("Create Output Folder"):
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-    st.success(f"Output folder created/verified at: {OUTPUT_FOLDER}")
 
 def get_mimetype(ext):
     ext = ext.lower()
@@ -104,7 +97,7 @@ def extract_panchayat_name(md_text):
         return match.group(1).strip()
     return "ഗ്രാമപഞ്ചായത്ത് ഡോക്യുമെന്റ്"
 
-def markdown_to_docx(md_text, out_path):
+def markdown_to_docx(md_text):
     html = markdown2.markdown(md_text, extras=["tables"])
     soup = BeautifulSoup(html, "html.parser")
     doc = Document()
@@ -119,8 +112,7 @@ def markdown_to_docx(md_text, out_path):
 
     body = soup.body if soup.body else soup
     if not body or not list(body.children):
-        st.warning("No content available to write to DOCX.")
-        return False
+        return None
 
     for el in body.children:
         name = getattr(el, "name", None)
@@ -150,8 +142,13 @@ def markdown_to_docx(md_text, out_path):
                     table.cell(i, j).text = cell.text
         elif name is None and el.string and el.string.strip():
             doc.add_paragraph(el.string.strip())
-    doc.save(out_path)
-    return True
+    # Save the docx to a temporary file and return the path and docx bytes
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp_file:
+        doc.save(tmp_file.name)
+        tmp_file.seek(0)
+        docx_bytes = tmp_file.read()
+    os.unlink(tmp_file.name)
+    return docx_bytes
 
 def transcribe_and_translate(model, audio_bytes, mimetype, fname):
     with st.spinner(f"Transcribing {fname}..."):
@@ -160,17 +157,14 @@ def transcribe_and_translate(model, audio_bytes, mimetype, fname):
             "Transcribe this audio. Output only the transcript."
         ])
         transcript = transcript_response.text.strip()
-        st.write(f"**Transcript for {fname}:**\n{transcript}")
         if not transcript or transcript.strip().lower() in (
             "none", "no speech detected", "could not transcribe"):
-            st.warning(f"No valid transcript extracted for {fname}.")
             return ""
     with st.spinner(f"Translating {fname} to Malayalam..."):
         translation_response = model.generate_content([
             f"ഇത് മലയാളത്തിലേക്ക് വിവർത്തനം ചെയ്യുക:\n{transcript}"
         ])
         mal_text = translation_response.text.strip()
-        st.write(f"**Malayalam Translation for {fname}:**\n{mal_text}")
         return mal_text
 
 def generate_professional_document(model, mal_text, fname):
@@ -178,20 +172,19 @@ def generate_professional_document(model, mal_text, fname):
         doc_prompt = improved_gemini_prompt(mal_text)
         doc_response = model.generate_content([doc_prompt])
         professional_doc_md = doc_response.text.strip()
-        st.write(f"**Generated Markdown for {fname}:**\n{professional_doc_md}")
         return professional_doc_md
 
 if st.session_state.credentials_set:
-    st.header("Step 2: Upload Audio Files")
+    st.header("Step 1: Upload Audio Files")
     audio_files = st.file_uploader(
         "Upload audio files (WAV, MP3, OGG, FLAC, M4A, MP4)",
         type=["wav", "mp3", "ogg", "flac", "m4a", "mp4"],
         accept_multiple_files=True
     )
 
-    if audio_files and st.button("Process Audio Files"):
+    if audio_files:
         model = genai.GenerativeModel("models/gemini-1.5-flash-latest")
-        st.header("Processing Results")
+
         for audio_file in audio_files:
             fname = audio_file.name
             ext = os.path.splitext(fname)[1]
@@ -202,22 +195,22 @@ if st.session_state.credentials_set:
                 audio_bytes = audio_file.read()
                 mal_text = transcribe_and_translate(model, audio_bytes, mimetype, fname)
                 if not mal_text.strip():
-                    st.error(f"Skipping {fname} as no transcript/translation was extracted.")
+                    st.error(f"Skipping {fname}: no transcript or translation extracted.")
                     continue
                 professional_doc_md = generate_professional_document(model, mal_text, fname)
                 if not professional_doc_md.strip():
-                    st.error(f"Skipping {fname} as no markdown document was generated.")
+                    st.error(f"Skipping {fname}: markdown document was not generated.")
                     continue
-                out_base = os.path.splitext(fname)[0]
-                docx_path = os.path.join(OUTPUT_FOLDER, f"{out_base}_panchayat_document.docx")
-                if markdown_to_docx(professional_doc_md, docx_path):
-                    with open(docx_path, "rb") as f:
-                        st.download_button(
-                            label=f"Download {fname} DOCX",
-                            data=f,
-                            file_name=f"{out_base}_panchayat_document.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                        )
-                    st.success(f"DOCX created: {docx_path}")
+                docx_bytes = markdown_to_docx(professional_doc_md)
+                if docx_bytes:
+                    st.download_button(
+                        label=f"Download {fname} DOCX",
+                        data=docx_bytes,
+                        file_name=f"{os.path.splitext(fname)[0]}_panchayat_document.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+                    st.success(f"DOCX ready for download: {fname}")
+                else:
+                    st.error(f"Failed to generate DOCX for {fname}.")
             except Exception as e:
                 st.error(f"Error processing {fname}: {e}")
