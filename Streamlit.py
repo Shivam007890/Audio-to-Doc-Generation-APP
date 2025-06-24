@@ -15,7 +15,11 @@ st.title("Panchayat Audio Report Generator")
 st.write("Upload audio files to transcribe, translate to Malayalam, and generate professional Panchayat reports in DOCX format.")
 
 # 1. Configure Gemini API key from secrets (REQUIRED for Gemini API)
-genai.configure(api_key=st.secrets["gemini"]["api_key"])
+if "gemini" in st.secrets and "api_key" in st.secrets["gemini"]:
+    genai.configure(api_key=st.secrets["gemini"]["api_key"])
+else:
+    st.error("Gemini API key not found in secrets. Please add [gemini] api_key to your .streamlit/secrets.toml.")
+    st.stop()
 
 # 2. Set up Google Application Credentials for other Google APIs (OPTIONAL, only if you use them)
 def set_google_credentials_from_secrets():
@@ -44,7 +48,6 @@ def cleanup():
 import atexit
 atexit.register(cleanup)
 
-# ========== USER CONFIGURATION (can be changed via UI) ==========
 st.header("Step 1: Configure Folders")
 AUDIO_FOLDER = st.text_input("Audio Folder Path", value=r"C:\Users\tiwar\OneDrive\Desktop\AUDIO_FOLDER")
 OUTPUT_FOLDER = st.text_input("Output Folder Path", value=r"C:\Users\tiwar\OneDrive\Desktop\GEMINI_OUTPUT")
@@ -52,7 +55,6 @@ if st.button("Create Output Folder"):
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
     st.success(f"Output folder created/verified at: {OUTPUT_FOLDER}")
 
-# ========== UTILITY FUNCTIONS ==========
 def get_mimetype(ext):
     ext = ext.lower()
     if ext == ".mp3":
@@ -179,7 +181,6 @@ def generate_professional_document(model, mal_text, fname):
         st.write(f"**Generated Markdown for {fname}:**\n{professional_doc_md}")
         return professional_doc_md
 
-# ========== MAIN APP LOGIC ==========
 if st.session_state.credentials_set:
     st.header("Step 2: Upload Audio Files")
     audio_files = st.file_uploader(
