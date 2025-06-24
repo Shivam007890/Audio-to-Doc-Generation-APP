@@ -8,7 +8,7 @@ import google.generativeai as genai
 import markdown2
 from bs4 import BeautifulSoup
 import tempfile
-import shutil
+import json
 
 # Streamlit page configuration
 st.set_page_config(page_title="Panchayat Audio Report Generator", layout="wide")
@@ -17,42 +17,38 @@ st.set_page_config(page_title="Panchayat Audio Report Generator", layout="wide")
 st.title("Panchayat Audio Report Generator")
 st.write("Upload multiple audio files to transcribe, translate to Malayalam, and generate professional Panchayat reports in DOCX format.")
 
-# Initialize session state for credentials
-if 'credentials_set' not in st.session_state:
-    st.session_state.credentials_set = False
-
-# Function to set Google API credentials
-def set_credentials(json_file):
+# Set Google API credentials from Streamlit Secrets
+def set_credentials():
     try:
+        # Access credentials from Streamlit Secrets
+        credentials_json = st.secrets["google"]["credentials"]
+        # Write credentials to a temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix='.json') as tmp_file:
-            tmp_file.write(json_file.read())
+            tmp_file.write(credentials_json.encode('utf-8'))
             tmp_file_path = tmp_file.name
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tmp_file_path
-        st.session_state.credentials_set = True
-        st.session_state.temp_credentials_path = tmp_file_path
-        st.success("Google API credentials set successfully!")
+        st.session_state.credentials_path = tmp_file_path
+        st.success("Google API credentials loaded successfully from Streamlit Secrets!")
+        return True
     except Exception as e:
-        st.error(f"Error setting credentials: {e}")
-        st.session_state.credentials_set = False
+        st.error(f"Error loading credentials from Secrets: {e}")
+        return False
 
-# Google API credentials upload
-st.header("Step 1: Upload Google API Credentials")
-json_file = st.file_uploader("Upload your Google Cloud JSON credentials file", type=["json"])
-if json_file:
-    set_credentials(json_file)
-else:
-    st.warning("Please upload your Google Cloud JSON credentials file to proceed.")
+# Initialize credentials
+if 'credentials_set' not in st.session_state:
+    st.session_state.credentials_set = set_credentials()
 
 # Proceed only if credentials are set
 if st.session_state.credentials_set:
     # Audio file upload
-    st.header("Step 2: Upload Audio Files")
+    st.header("Step 1: Upload Audio Files")
     st.write("Supported formats: WAV, MP3, OGG, FLAC, M4A, MP4")
     audio_files = st.file_uploader("Upload audio files", type=["wav", "mp3", "ogg", "flac", "m4a", "mp4"], accept_multiple_files=True)
 
     # Output folder configuration
-    st.header("Step 3: Configure Output")
-    output_folder = st.text_input("Output Folder Path", value=os.path.join(os.path.expanduser("~"), "Desktop", "GEMINI_OUTPUT"))
+    st.header("Step 2: Configure Output")
+    default_output = os.path.join(os.path.expanduser("~"), "Desktop", "GEMINI_OUTPUT")
+    output_folder = st.text_input("Output Folder Path", value=default_output)
     if st.button("Create Output Folder"):
         os.makedirs(output_folder, exist_ok=True)
         st.success(f"Output folder created/verified at: {output_folder}")
@@ -71,7 +67,7 @@ if st.session_state.credentials_set:
         else:
             return "audio/wav"
 
-    # Improved Gemini prompt (same as provided)
+    # Improved Gemini prompt (unchanged from your script)
     def improved_gemini_prompt(mal_text):
         return f"""
         ഈ transcript-ന്റെ അടിസ്ഥാനത്തിൽ, താഴെ പറയുന്ന ഘടനയും നിർദേശങ്ങളും കർശനമായി പാലിച്ചുകൊണ്ട് ഒരു ഗ്രാമപഞ്ചായത്ത് വിശദമായ, ഔദ്യോഗിക ഭാഷയിൽ എഴുതിയ, പ്രൊഫഷണൽ വിശകലന റിപ്പോർട്ട് markdown format-ൽ തയ്യാറാക്കുക.
@@ -96,7 +92,7 @@ if st.session_state.credentials_set:
         - body content professional, visionary, policy-oriented language-ൽ paragraph-ൽ വിശദമായി എഴുതുക.
 
         - Section headings bold, left aligned; subheadings bold, left aligned, smaller font; body justified alignment, bullet points/numbered lists ആവശ്യമായിടത്ത് മാത്രം ഉപയോഗിക്കുക.
-        - Report-ൽ ഒരു ഭാഗത്തും [Insert ... here], "---", “audio does not provide”, “audio indicates”, “audio mentions”, “not mentioned”, “unavailable”, “lack of data”, “audio-യിൽ” എന്നൊന്നും എഴുതരുത്.
+        - Report-ൽ ഒരു ഭാഗത്തും [Insert ... here], "---", “audio does not provide”, “audio indicates”, “audio mentions”, “not mentioned”, “unavailable”, “lack. of data”, “audio-യിൽ” എന്നൊന്നും എഴുതരുത്.
 
         Transcript:
         {mal_text}
@@ -126,7 +122,7 @@ if st.session_state.credentials_set:
         body = soup.body if soup.body else soup
         if not body or not list(body.children):
             st.warning("No content available to write to DOCX.")
-            return
+            return False
 
         for el in body.children:
             name = getattr(el, "name", None)
@@ -140,6 +136,7 @@ if st.session_state.credentials_set:
                     doc.add_paragraph(li.text, style="List Bullet")
             elif name == "ol":
                 for li in el.find_all("li", recursive=False):
+                    docස്‍
                     doc.add_paragraph(li.text, style="List Number")
             elif name == "p":
                 doc.add_paragraph(el.text)
@@ -156,6 +153,7 @@ if st.session_state.credentials_set:
             elif name is None and el.string and el.string.strip():
                 doc.add_paragraph(el.string.strip())
         doc.save(out_path)
+        return True
 
     # Function to transcribe and translate audio
     def transcribe_and_translate(model, audio_bytes, mimetype, fname):
@@ -210,31 +208,30 @@ if st.session_state.credentials_set:
 
                 professional_doc_md = generate_professional_document(model, mal_text, fname)
                 if not professional_doc_md.strip():
-                    st.error(f"Skipping {fname} as no markdown document was generated.")
+                    st.error(f"Skiping {fname} as no markdown document was generated.")
                     continue
 
                 # Save DOCX to output folder
                 out_base = os.path.splitext(fname)[0]
                 docx_path = os.path.join(output_folder, f"{out_base}_panchayat_document.docx")
-                markdown_to_docx(professional_doc_md, docx_path)
-                
-                # Provide download link
-                with open(docx_path, "rb") as f:
-                    st.download_button(
-                        label=f"Download {fname} DOCX",
-                        data=f,
-                        file_name=f"{out_base}_panchayat_document.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    )
-                st.success(f"DOCX created: {docx_path}")
+                if markdown_to_docx(professional_doc_md, docx_path):
+                    # Provide download link
+                    with open(docx_path, "rb") as f:
+                        st.download_button(
+                            label=f"Download {fname} DOCX",
+                            data=f,
+                            file_name=f"{out_base}_panchayat_document.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        )
+                    st.success(f"DOCX created: {docx_path}")
             except Exception as e:
                 st.error(f"Error processing {fname}: {e}")
 
 # Clean up temporary credentials file on app exit
 def cleanup():
-    if 'temp_credentials_path' in st.session_state:
+    if 'credentials_path' in st.session_state:
         try:
-            os.unlink(st.session_state.temp_credentials_path)
+            os.unlink(st.session_state.credentials_path)
         except:
             pass
 
